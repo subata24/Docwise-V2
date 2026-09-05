@@ -6,10 +6,13 @@ from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPExc
 from sqlalchemy.orm import Session
 
 from backend.database import Base, SessionLocal, engine, get_db
-from backend.ingest import UPLOAD_DIR, ingest_pdf
+from backend.ingest import UPLOAD_DIR, ingest_document
 from backend.models import Document
 from backend.rag import ask, build_chain, compare_documents, cross_search
 from backend.schemas import ChatRequest, ChatResponse
+
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".png"}
+
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="DocWise API", version="1.0.0")
@@ -37,8 +40,13 @@ async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files accepted")
+    extension = os.path.splitext(file.filename)[1].lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            400,
+            "Unsupported file type. Allowed types: PDF, DOCX, TXT, MD, PNG"
+        )
 
     doc_id    = str(uuid.uuid4())[:8]
     save_path = f"{UPLOAD_DIR}/{doc_id}_{file.filename}"
@@ -61,19 +69,28 @@ async def upload_document(
 def _ingest_bg(path: str, doc_id: str, user_id: str):
     db = SessionLocal()
     try:
-        result = ingest_pdf(path, doc_id, user_id)
-        doc    = db.query(Document).filter(
-                     Document.id == doc_id).first()
+        result = ingest_document(path, doc_id, user_id)
+
+        doc = db.query(Document).filter(
+            Document.id == doc_id
+        ).first()
+
         if doc:
             doc.status = "ready"
             doc.chunks = result["chunks_added"]
             db.commit()
+
     except Exception as exc:
         print(f"Failed to ingest document {doc_id}: {exc}", flush=True)
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+
+        doc = db.query(Document).filter(
+            Document.id == doc_id
+        ).first()
+
         if doc:
             doc.status = "failed"
             db.commit()
+
     finally:
         db.close()
 
