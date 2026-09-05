@@ -1,9 +1,13 @@
 import os
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_classic.chains import ConversationalRetrievalChain
 from langchain_classic.memory import ConversationBufferWindowMemory
 from langchain_core.prompts import PromptTemplate
-from backend.ingest import get_vectorstore
+from backend.retrieval.dense import (
+    get_dense_retriever,
+    dense_similarity_search
+)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,16 +37,15 @@ Answer:"""
 )
 
 
-def build_chain(user_id: str, doc_ids: list[str] | None = None):
-    vectorstore = get_vectorstore(user_id)
+def build_chain(
+    user_id: str,
+    doc_ids: list[str] | None = None
+):
 
-    search_kwargs = {"k": 5}
-    if doc_ids:
-        search_kwargs["filter"] = {"doc_id": {"$in": doc_ids}}
-
-    retriever = vectorstore.as_retriever(
-        search_type="mmr",
-        search_kwargs=search_kwargs
+    retriever = get_dense_retriever(
+        user_id,
+        doc_ids=doc_ids,
+        k=5
     )
 
     memory = ConversationBufferWindowMemory(
@@ -61,34 +64,62 @@ def build_chain(user_id: str, doc_ids: list[str] | None = None):
         return_source_documents=True,
         verbose=False
     )
+
     return chain
 
 
 def ask(chain, question: str) -> dict:
-    result  = chain({"question": question})
+
+    result = chain({"question": question})
+
     sources = list({
         doc.metadata.get("source", "unknown")
         for doc in result.get("source_documents", [])
     })
-    return {"answer": result["answer"], "sources": sources}
+
+    return {
+        "answer": result["answer"],
+        "sources": sources
+    }
 
 
-def compare_documents(user_id: str,
-                      doc_ids: list[str],
-                      question: str) -> dict:
+def compare_documents(
+    user_id: str,
+    doc_ids: list[str],
+    question: str
+) -> dict:
+
     results = {}
+
     for doc_id in doc_ids:
-        chain           = build_chain(user_id, [doc_id])
-        results[doc_id] = ask(chain, question)["answer"]
-    return {"question": question, "by_document": results}
+        chain = build_chain(user_id, [doc_id])
+
+        results[doc_id] = ask(
+            chain,
+            question
+        )["answer"]
+
+    return {
+        "question": question,
+        "by_document": results
+    }
 
 
-def cross_search(user_id: str, query: str, k: int = 8) -> list:
-    vs      = get_vectorstore(user_id)
-    results = vs.similarity_search_with_score(query, k=k)
+def cross_search(
+    user_id: str,
+    query: str,
+    k: int = 8
+) -> list:
+
+    results = dense_similarity_search(
+        user_id,
+        query,
+        k=k
+    )
+
     return [{
         "content": doc.page_content[:400],
-        "source":  doc.metadata.get("source"),
-        "doc_id":  doc.metadata.get("doc_id"),
-        "score":   round(float(score), 3)
+        "source": doc.metadata.get("source"),
+        "doc_id": doc.metadata.get("doc_id"),
+        "score": round(float(score), 3)
     } for doc, score in results]
